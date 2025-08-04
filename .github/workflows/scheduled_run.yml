@@ -2,9 +2,9 @@ name: Run Yahoo News Transfer Script
 
 on:
   schedule:
-    # 毎日午前0:00（JST）に実行
-    # 協定世界時（UTC）では前日の15:00
-    - cron: '0 15 * * *'
+    # 毎日15:15（JST）に実行
+    # 協定世界時（UTC）では6:15
+    - cron: '15 6 * * *'
   workflow_dispatch:
 
 jobs:
