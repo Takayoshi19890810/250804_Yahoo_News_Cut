@@ -156,6 +156,9 @@ def transfer_yahoo_news_from_source_sheet():
                 # Excel/Googleスプレッドシートのシリアル値の場合
                 epoch = datetime.datetime(1899, 12, 30)
                 post_date = epoch + datetime.timedelta(days=post_date_raw)
+            elif isinstance(post_date_raw, datetime.date):
+                # dateオブジェクトの場合
+                post_date = datetime.datetime.combine(post_date_raw, datetime.time())
             
             if post_date:
                 # タイムゾーン情報を付与
@@ -164,7 +167,8 @@ def transfer_yahoo_news_from_source_sheet():
                 if start_time <= post_date <= end_time:
                     # 重複チェック
                     if url not in existing_urls_in_destination:
-                        new_row = [source_sheet_name, title, url, post_date.isoformat(), source]
+                        # 投稿日の形式をYYYY/MM/DDに変更
+                        new_row = [source_sheet_name, title, url, post_date.strftime('%Y/%m/%d'), source]
                         collected_news.append(new_row)
 
         except (IndexError, ValueError) as e:
