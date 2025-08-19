@@ -1,24 +1,24 @@
 # -*- coding: utf-8 -*-
 """
 Yahooニュースの転記（コピー元→出力先）に加えて、
-出力先シート（当日名のタブ）の B列タイトルを Gemini で一括分類し、
+出力先シート（当日タブ）の B列タイトルを Gemini で一括分類し、
 M列（ポジネガ）/ N列（カテゴリ）にバルク書き込みする。
 
-認証:
-- Sheets: 環境変数 GCP_SA_KEY（サービスアカウントJSONの中身）を使用。無ければ key.json を読む。
-- Gemini: 環境変数 GEMINI_API_KEY（AI Studioで発行したGenerative Language APIキー）
+認証（必須・Secrets 推奨）:
+- GOOGLE_CREDENTIALS: サービスアカウントJSONの“中身”（文字列）
+- GEMINI_API_KEY: AI Studioで発行した Generative Language API キー
 
 実行の流れ:
-1) 既存ロジックでコピー元シートから期間内（JST 15:00〜翌日14:59:59）のニュースを抽出
-2) 出力先スプレッドシートの当日タブ（yyMMdd）を用意し、重複を避けて A〜L 列へ追記
-3) その当日タブの B列・L列を読み取り、Gemini（失敗時はルールベース）で M/N 列を書き込み
+1) コピー元シートから JST 15:00〜翌日14:59:59 のニュースを抽出
+2) 出力先シートの当日タブ（yyMMdd）へ A〜L 列に追記（重複URLは除外）
+3) 当日タブの B/L 列を取得し、Gemini（失敗時はルールベース）で M/N 列を更新
 """
 
 import os
-import datetime
 import json
 import re
 import time
+import datetime
 from typing import List, Dict, Tuple
 
 from google.oauth2 import service_account
@@ -27,6 +27,12 @@ from googleapiclient.errors import HttpError
 
 # === Generative Language API (Gemini) ===
 import google.generativeai as genai
+
+
+# ========= 既存のスプレッドシートID（そのまま利用） =========
+SOURCE_SPREADSHEET_ID = '1RglATeTbLU1SqlfXnNToJqhXLdNoHCdePldioKDQgU8'
+DESTINATION_SPREADSHEET_ID = '19c6yIGr5BiI7XwstYhUPptFGksPPXE4N1bEq5iFoPok'
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
 
 # ========= ルールベース（フォールバック） =========
@@ -97,7 +103,10 @@ def gemini_smoke_test() -> bool:
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(MODEL_NAME)
-        r = model.generate_content("OKだけ", generation_config={"temperature": 0, "max_output_tokens": 4, "response_mime_type": "text/plain"})
+        r = model.generate_content(
+            "OKだけ返してください",
+            generation_config={"temperature": 0, "max_output_tokens": 4, "response_mime_type": "text/plain"}
+        )
         ok = (r.text or "").strip()
         if ok:
             print("✅ Gemini 接続OK（Generative Language API）")
@@ -149,32 +158,34 @@ def gemini_batch_classify(items: List[Dict]) -> List[Dict]:
     return ensure_json_array(resp.text or "")
 
 
+# ========= Sheets 認証 =========
+def build_sheets_service():
+    """環境変数 GOOGLE_CREDENTIALS（JSON文字列）から認証して Sheets サービスを返す。"""
+    creds_json = os.environ.get('GOOGLE_CREDENTIALS')
+    if not creds_json:
+        raise RuntimeError("環境変数 GOOGLE_CREDENTIALS が未設定です（サービスアカウントJSONの中身を貼り付けてください）。")
+    try:
+        creds_info = json.loads(creds_json)
+    except Exception as e:
+        raise RuntimeError(f"GOOGLE_CREDENTIALS のJSONが不正です: {e}")
+
+    creds = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    return build('sheets', 'v4', credentials=creds)
+
+
 # ========= 本体：転記＋分類 =========
 def transfer_yahoo_news_from_source_sheet():
     """
     既存の転記ロジック（コピー元→出力先） + 当日タブのB列を分類してM/N列へ出力
     """
-
-    # --- 設定（既存のIDそのまま使用） ---
-    SOURCE_SPREADSHEET_ID = '1RglATeTbLU1SqlfXnNToJqhXLdNoHCdePldioKDQgU8'
-    DESTINATION_SPREADSHEET_ID = '19c6yIGr5BiI7XwstYhUPptFGksPPXE4N1bEq5iFoPok'
-    SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-
-    # --- 認証 ---
+    # 認証
     try:
-        creds_json = os.environ.get('GCP_SA_KEY')
-        if not creds_json:
-            with open('key.json', 'r', encoding='utf-8') as f:
-                creds_info = json.load(f)
-        else:
-            creds_info = json.loads(creds_json)
-        creds = service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
-        service = build('sheets', 'v4', credentials=creds)
+        service = build_sheets_service()
     except Exception as e:
         print(f"エラー: Google Sheets APIの認証に失敗しました。詳細: {e}")
         return
 
-    # --- JST日付＆当日タブ名 ---
+    # JST日付＆当日タブ名
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
     yesterday = today - datetime.timedelta(days=1)
     start_time = yesterday.replace(hour=15, minute=0, second=0, microsecond=0)
@@ -184,7 +195,7 @@ def transfer_yahoo_news_from_source_sheet():
     print(f"出力先シート名: {destination_sheet_name}")
     print(f"期間: {start_time.strftime('%Y/%m/%d %H:%M:%S')} 〜 {end_time.strftime('%Y/%m/%d %H:%M:%S')}")
 
-    # --- 出力先タブの存在確認＆取得 ---
+    # 出力先タブの存在確認＆取得
     existing_data_in_destination = []
     header_exists = False
     try:
@@ -219,7 +230,7 @@ def transfer_yahoo_news_from_source_sheet():
 
     print(f"出力先タブの既存ニュース: {len(existing_urls_in_destination)} 件（URL重複判定）")
 
-    # --- コピー元（Yahoo）から抽出 ---
+    # コピー元（Yahoo）から抽出
     source_sheet_name = 'Yahoo'
     try:
         source_sheet_range = f"'{source_sheet_name}'!A:D"
@@ -254,6 +265,7 @@ def transfer_yahoo_news_from_source_sheet():
                         except ValueError:
                             pass
                 elif isinstance(post_date_raw, float):
+                    # Excel シリアル
                     epoch = datetime.datetime(1899, 12, 30)
                     post_date = epoch + datetime.timedelta(days=post_date_raw)
                 elif isinstance(post_date_raw, datetime.date):
@@ -267,9 +279,10 @@ def transfer_yahoo_news_from_source_sheet():
             except Exception as e:
                 print(f"警告: 行 {i+1} の処理をスキップ: {e}")
 
-    # --- 追記（必要ならヘッダーも） ---
+    # 追記（必要ならヘッダーも）
     if not header_exists:
-        header_row = ['ソース','タイトル','URL','投稿日','引用元','コメント数','ポジネガ','カテゴリー','有料記事','J列(ダブりチェック)','K列（タイトル抜粋）','L列（番号）']
+        header_row = ['ソース','タイトル','URL','投稿日','引用元','コメント数','ポジネガ','カテゴリー','有料記事',
+                      'J列(ダブりチェック)','K列（タイトル抜粋）','L列（番号）']
         service.spreadsheets().values().append(
             spreadsheetId=DESTINATION_SPREADSHEET_ID,
             range=f"'{destination_sheet_name}'!A1",
@@ -381,7 +394,7 @@ def transfer_yahoo_news_from_source_sheet():
         m_values.append([sentiment])
         n_values.append([category])
 
-    end_row = 1 + len(m_values)
+    end_row = 1 + len(m_values)  # M2〜M{end_row}
     service.spreadsheets().values().update(
         spreadsheetId=DESTINATION_SPREADSHEET_ID,
         range=f"'{destination_sheet_name}'!M2:M{end_row}",
