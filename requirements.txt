@@ -1,5 +1,19 @@
+# Google APIs 関連
 google-api-python-client==2.137.0
 google-auth==2.33.0
 google-auth-oauthlib==1.2.1
 google-auth-httplib2==0.2.0
+
+# Gemini (Generative Language API)
 google-generativeai==0.8.3
+
+# データ処理・分析
+pandas==2.2.3
+numpy==2.1.0
+
+# Webリクエスト
+requests==2.32.3
+urllib3==2.2.2
+
+# 開発時のデバッグ用（任意）
+tqdm==4.66.5
