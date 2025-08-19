@@ -1,31 +1,54 @@
-name: Run Yahoo News Transfer Script
+name: Classify Titles with Gemini and Update Google Sheet
 
 on:
   schedule:
-    # 毎日15:15（JST）に実行
-    # 協定世界時（UTC）では6:15
-    - cron: '15 6 * * *'
+    # 毎日 15:15 JST（= 06:15 UTC）に実行
+    - cron: "15 6 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: gemini-sheet-classify
+  cancel-in-progress: false
+
 jobs:
-  build:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}       # AI Studioで発行したAPIキー
+      GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }} # サービスアカウントJSONの中身（文字列）
+      PYTHON_VERSION: "3.11"
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+      - name: 📥 Check out repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.x'
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          check-latest: true
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          else
+            pip install \
+              google-api-python-client==2.137.0 \
+              google-auth==2.33.0 \
+              google-generativeai==0.8.3
+          fi
 
-    - name: Run script
-      env:
-        GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-      run: |
-        python main.py
+      - name: 🔎 Show versions (debug)
+        run: |
+          python -V
+          pip freeze | sed -n '1,120p'
+
+      - name: ▶️ Run classifier
+        run: |
+          python main.py
